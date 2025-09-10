@@ -1,0 +1,858 @@
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, signInWithEmailAndPassword } from 'firebase/auth';
+import { getFirestore, doc, setDoc, onSnapshot } from 'firebase/firestore';
+import { Zap, Star, CheckSquare, List, HandCoins, LogIn } from 'lucide-react';
+
+// Use this to display the user's ID for others to join a collaborative session
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? initialAuthToken : null;
+
+// The main App component
+const App = () => {
+  const [db, setDb] = useState(null);
+  const [auth, setAuth] = useState(null);
+  const [userId, setUserId] = useState(null);
+  const [userData, setUserData] = useState({
+    points: 0,
+    totalPointsEarned: 0,
+    screenTimeMins: 0,
+    dailyChores: [],
+    optionalChores: [],
+    launchpadChores: [],
+    weeklyChores: [],
+    lastResetDate: null,
+  });
+  const [showModal, setShowModal] = useState(null);
+  const [selectedWeeklyChores, setSelectedWeeklyChores] = useState([]);
+  const [activeChore, setActiveChore] = useState(null);
+  const [redeemAmount, setRedeemAmount] = useState('');
+  const [redeemType, setRedeemType] = useState('minutes');
+  const [showTicker, setShowTicker] = useState(false);
+  const [tickerMessage, setTickerMessage] = useState('');
+  const [parentCode, setParentCode] = useState('');
+  const [screenTimeReward, setScreenTimeReward] = useState(null);
+  const [showLoginModal, setShowLoginModal] = useState(false);
+  const [manualId, setManualId] = useState('');
+  const PARENT_APPROVAL_CODE = '4567';
+  const isSunday = true;
+
+  // Constants
+  const ALL_CHORES_FOR_SELECTION = useMemo(() => ([
+    { title: 'Empty Trash', points: 3, type: 'weekly', tasks: ['Get a kitchen trash bag from under the sink.', 'Go to all the bathrooms and take the bag out of the small trash can.', 'Go to your bedroom and take the bag out of your trash can.', 'Put all the small bags to the big kitchen trash can.', 'Carry the big bag outside to the outdoor trash bin.'] },
+    { title: 'Tidy the Shoe Area', points: 1, type: 'weekly', tasks: ['Go to the entryway where the shoes are upstairs.', 'Pick up each pair of shoes.', 'Place them side-by-side in a neat line against the wall or in the shoe rack.', 'Make sure all the shoes are lined up nicely.', 'Do the same thing with the shoes downstairs and in the garage.'] },
+    { title: 'Bring in the Mail', points: 1, type: 'weekly', tasks: ['Walk out to the mailbox.', 'Open it and take out ALL the letters and papers inside.', 'Close the mailbox door.', 'Bring the mail inside and put it in a neat pile on the hallway table.'] },
+    { title: 'Match Clean Socks', points: 2, type: 'weekly', tasks: ['Get the basket of clean socks.', 'Pick up one sock. Look for its match.', 'When you find the match, roll them into a ball together.', 'Make 4 piles – Abe, Jules, mom, dad', 'Keep going until all the socks are matched. Put any unmatched socks in the lost sock spot'] },
+    { title: 'Put Away Clean Laundry', points: 3, type: 'weekly', tasks: ['Find the basket with your clean clothes.', 'Pick up one item at a time carefully so it doesn’t get unfolded', 'Open the correct drawer (shirts, pants, socks) and place it inside.', 'Continue until the basket is empty and all your clothes are put away.'] },
+    { title: 'Help Bring in Groceries', points: 1, type: 'weekly', tasks: ['When the car is in the garage, go out and open the trunk.', 'Pick one or two bags that you can carry safely.', 'Carry them into the kitchen and set them on the counter.', 'Go back to the car for another load if Mom or Dad says so.'] },
+    { title: 'Gather Recycling', points: 2, type: 'weekly', tasks: ['Get an empty recycling bin or a bag.', 'Walk around the house and look for any paper, plastic bottles, or cans.', 'Check the small recycling bins in the office or bathrooms.', 'Put everything you find into the main recycling bin in the garage or kitchen.'] },
+    { title: 'Vacuum Kitchen Floor', points: 3, type: 'weekly', tasks: ['Get the small vacuum from the linen closet.', 'Turn it on.', 'Move the vacuum nozzle along the edges of the kitchen cabinets where crumbs hide.', 'Vacuum under the edge of the fridge.', 'When you\'re done, empty the vacuum dust into the trash can.', 'Put the vacuum away.'] },
+    { title: 'Clean Bathtub', points: 3, type: 'weekly', tasks: ['Take all the shampoo bottles, soap, and toys out of the tub and put them on the bathroom floor.', 'Get the Tilex and a sponge from under the sink.', 'Spray the inside of the tub and the walls, especially where there is mold. Do not wipe off.', 'Use the sponge to scrub the bottom and sides of the tub.', 'Use the shower head or a cup to rinse all the bubbles down the drain.', 'Put all the bottles and toys back in the tub.'] },
+    { title: 'Clean Playroom', points: 5, type: 'weekly', tasks: ['Toys: Pick up all the toys from the floor and couch. Put them back in the correct bins.', 'Books: Gather all the books and put them on the bookshelf.', 'Paper: Pick up any papers. If they are trash, put in the recycle. If they are keep, put them in an assigned paper bin.', 'Trash: Find any trash and put it in the trash can.', 'Pillows/Blankets: Put pillows and folded blankets back on the couch.'] },
+    { title: 'Bring in Trash/Recycle Bins', points: 2, type: 'weekly', tasks: ['On Tuesday mornings, after the truck has come, go outside.', 'Pull the empty trash bin from the curb back to its spot by the garage.', 'Pull the empty recycling bin from the curb back to its spot.'] },
+    { title: 'Mop the Entryway/Mudroom', points: 2, type: 'weekly', tasks: ['Get the broom, dustpan, mop and bucket from the laundry room.', 'Sweep First: Sweep all the dirt into a pile. Sweep the pile into the dustpan and empty it in the trash.', 'Mop Second: Get the mop and bucket. Fill the bucket with warm water and cleaner (ask Mom or Dad how much).', 'Dip the mop in, wring it out so it\'s not dripping.', 'Mop the entire floor, starting from the corner farthest from the door.', 'When you\'re done, empty the dirty water into the toilet.', 'Put the mop and bucket away.'] },
+    { title: 'Refill Toilet Paper', points: 2, type: 'weekly', tasks: ['Check each bathroom to see how many extra rolls of toilet paper they need. Each bathroom should have 3 spare rolls.', 'Get the amount of rolls of toilet paper you need for each bathroom.', 'Put extra rolls on the toilet paper rack'] },
+    { title: 'Vacuum Stairs', points: 2, type: 'weekly', tasks: ['Start at the top of the stairs.', 'Carefully vacuum each stair, making sure to get all the dust and dirt.', 'Work your way down to the bottom.', 'Empty the vacuum when you are finished and put it away.'] },
+    { title: 'Feed Bruno', points: 1, type: 'daily', tasks: ['Put one scoop of dog food in Bruno\'s bowl.', 'Put the scooper back in the dog food container.', 'Dump out the old water from his bowl in the sink.', 'Fill the bowl with fresh water.', 'Put the water bowl back in its spot.'] },
+    { title: 'Set Dinner Table', points: 2, type: 'weekly', tasks: ['What are we having for dinner? Do we need forks, spoons, knives? Do we need plates or bowls?', 'Get the right amount of forks, spoons, and knives from the drawer.', 'Get the right amount of cups, plates, bowl.', 'Set each person’s place with the right utensils, plates/bowls and cups.', 'Ask Mom or Dad what drinks and sauces we need.', 'Get the drinks and sauces and put them in the middle of the table.'] },
+    { title: 'Clear Your Place', points: 2, type: 'weekly', tasks: ['Pick up your plate, cups, utensils and any containers.', 'Put containers in the recycle bin.', 'Scrape any leftover food off your plate into the trash.', 'If the dishwasher is dirty, put your plate on the bottom rack, utensils in the dishwasher basket, and cup on the top rack.', 'If the dishwasher is clean, put everything in the sink.'] },
+    { title: 'Wipe Table', points: 1, type: 'daily', tasks: ['Get the cleaning spray and a clean rag from under the kitchen sink.', 'Spray the table lightly.', 'Wipe the entire tabletop until it’s clean and dry.', 'Make sure to wipe up all the crumbs into your hand, not the floor.', 'Put the spray and the rag back where you found them.'] },
+    { title: 'Clear Dirty Clothes', points: 1, type: 'daily', tasks: ['Walk around your room, the playroom and the living room', 'Look on the floor, your bed, chairs and couches.', 'Pick up every piece of clothing you find.', 'If it’s dirty, put it in the washing machine.', 'If it’s clean, fold it and put it back in the right drawer.'] },
+    { title: 'Tidy Your Room', points: 1, type: 'daily', tasks: ['Clothes: Pick up all clothes from the floor. Put dirty ones in the washing machine and clean ones away in drawers.', 'Books: Pick up any books and them back on the bookshelf.', 'Toys: Pick up all toys and put them back in their correct bins or spots.', 'Trash: Look for trash (wrappers, old papers) and put it in the trash can.', 'Make Your Bed: Take all books and toys and put them where they belong. Pull your comforter up to the pillows.'] },
+    { title: 'Backpack Check', points: 1, type: 'daily', tasks: ['Open your backpack.', 'Take out your lunchbox and put it on the kitchen counter.', 'Take out any folders or papers and give them to Mom or Dad.', 'Zip your backpack closed.', 'Put your backpack by the front door.'] },
+    { title: 'Living Room Clean-Up (5 Minutes)', points: 1, type: 'daily', tasks: ['Set a timer for 5 minutes.', 'QUICKLY pick up anything that belongs to you (toys, books, socks, etc.) and put it away.', 'If your things are done, pick up other items like pillows or blankets and them back on the couch.', 'When the timer goes off, you are done!'] },
+  ]), []);
+
+  const LAUNCHPAD_CHORES = useMemo(() => ([
+    { title: 'Brush Teeth', id: 'brush', screenTime: 15 } ,
+    { title: 'Get Dressed', id: 'dressed', screenTime: 15 }
+  ]), []);
+  
+  const DAILY_CHORES_POOL = useMemo(() => {
+    return ALL_CHORES_FOR_SELECTION.filter(c => c.type === 'daily');
+  }, [ALL_CHORES_FOR_SELECTION]);
+  
+  const OPTIONAL_CHORES_POOL = useMemo(() => {
+    const dailyChores = userData.dailyChores.map(chore => chore.title);
+    const unchosenDaily = DAILY_CHORES_POOL
+      .filter(chore => !dailyChores.includes(chore.title))
+      .map(chore => ({ ...chore, points: 1, type: 'optional' }));
+
+    const weeklyChores = ALL_CHORES_FOR_SELECTION.filter(c => c.type === 'weekly');
+    const optionalWeekly = weeklyChores.filter(chore => !dailyChores.includes(chore.title));
+
+    return [...optionalWeekly, ...unchosenDaily];
+
+  }, [ALL_CHORES_FOR_SELECTION, DAILY_CHORES_POOL, userData.dailyChores]);
+
+  // Firebase Initialization & Authentication
+  useEffect(() => {
+    try {
+      const app = initializeApp(firebaseConfig);
+      const authInstance = getAuth(app);
+      const dbInstance = getFirestore(app);
+      setAuth(authInstance);
+      setDb(dbInstance);
+      
+      onAuthStateChanged(authInstance, async (user) => {
+        if (user) {
+          setUserId(user.uid);
+        } else {
+          await signInAnonymously(authInstance);
+        }
+      });
+    } catch (error) {
+      console.error("Firebase initialization error:", error);
+    }
+  }, []);
+
+  // Firestore Data Listener
+  useEffect(() => {
+    if (!db || !userId) return;
+
+    const userDocRef = doc(db, 'artifacts', appId, 'users', userId, 'chores', 'data');
+    const unsubscribe = onSnapshot(userDocRef, (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        setUserData(prev => {
+          const now = new Date();
+          let lastResetFromFirestore = data.lastResetDate;
+          if (lastResetFromFirestore && typeof lastResetFromFirestore.toDate === 'function') {
+            lastResetFromFirestore = lastResetFromFirestore.toDate();
+          }
+
+          const isNewDay = !lastResetFromFirestore || now.toDateString() !== lastResetFromFirestore.toDateString();
+
+          if (isNewDay) {
+            const resetDailyChores = data.dailyChores.map(chore => ({
+              ...chore,
+              tasks: chore.tasks.map(task => ({ text: task, completed: false })),
+              completed: false
+            }));
+            return {
+              ...data,
+              dailyChores: resetDailyChores,
+              launchpadChores: LAUNCHPAD_CHORES.map(chore => ({ ...chore, completed: false })),
+              lastResetDate: now,
+              totalPointsEarned: data.totalPointsEarned || 0,
+            };
+          }
+          return { ...data, lastResetDate: lastResetFromFirestore };
+        });
+      } else {
+        const today = new Date();
+        const initialData = {
+          points: 0,
+          totalPointsEarned: 0,
+          screenTimeMins: 0,
+          dailyChores: [],
+          optionalChores: [],
+          launchpadChores: LAUNCHPAD_CHORES.map(chore => ({ ...chore, completed: false })),
+          weeklyChores: [],
+          lastResetDate: today,
+        };
+        setDoc(userDocRef, initialData);
+        setUserData(initialData);
+      }
+    }, (error) => {
+      console.error("Error fetching Firestore data:", error);
+    });
+
+    return () => unsubscribe();
+  }, [db, userId, LAUNCHPAD_CHORES]);
+
+  // Handle initial custom token sign-in
+  useEffect(() => {
+    if (auth && initialAuthToken) {
+      signInWithCustomToken(auth, initialAuthToken).catch(console.error);
+    }
+  }, [auth, initialAuthToken]);
+  
+  const handleManualLogin = async () => {
+    try {
+      if (manualId) {
+        // Here we're using a simple dummy authentication strategy for the demo.
+        // In a real-world app, you'd use a more robust custom token approach.
+        // For our purposes, we'll just set the userId state to the manualId.
+        // This is a simplified approach to demonstrate the UI flow.
+        setUserId(manualId);
+        setShowLoginModal(false);
+      }
+    } catch (error) {
+      console.error("Manual login failed:", error);
+      setShowModal({ type: 'error', message: 'Login failed. Please check the ID.' });
+    }
+  };
+
+  const updateFirestore = useCallback(async (updates) => {
+    if (!db || !userId) return;
+    const userDocRef = doc(db, 'artifacts', appId, 'users', userId, 'chores', 'data');
+    try {
+      await setDoc(userDocRef, updates, { merge: true });
+    } catch (error) {
+      console.error("Error updating Firestore:", error);
+    }
+  }, [db, userId]);
+
+  const handleWeeklyChoreSelect = (chore) => {
+    setSelectedWeeklyChores(prev => {
+      if (prev.find(c => c.title === chore.title)) {
+        return prev.filter(c => c.title !== chore.title);
+      } else if (prev.length < 3) {
+        return [...prev, chore];
+      }
+      return prev;
+    });
+  };
+
+  const lockInWeeklyChores = () => {
+    if (selectedWeeklyChores.length === 3) {
+      const dailyChores = selectedWeeklyChores.map(chore => ({
+        ...chore,
+        tasks: chore.tasks,
+        completed: false,
+      }));
+      updateFirestore({ dailyChores, weeklyChores: selectedWeeklyChores.map(c => c.title) });
+      setShowModal(null);
+    }
+  };
+
+  const handleLaunchpadChoreClick = (choreId) => {
+    const updatedChores = userData.launchpadChores.map(chore =>
+      chore.id === choreId ? { ...chore, completed: !chore.completed } : chore
+    );
+
+    const allLaunchpadComplete = updatedChores.every(c => c.completed);
+    if (allLaunchpadComplete) {
+      const screenTimeEarned = 15;
+      setScreenTimeReward(screenTimeEarned);
+      updateFirestore({
+        launchpadChores: updatedChores
+      });
+    } else {
+       updateFirestore({ launchpadChores: updatedChores });
+    }
+  };
+
+  const handleDailyChoreClick = (chore) => {
+    const launchpadChoresComplete = userData.launchpadChores.every(c => c.completed);
+    if (!launchpadChoresComplete) {
+      setShowModal({ type: 'error', message: 'Launchpad protocols must be complete before daily protocols begin.' });
+      return;
+    }
+    setActiveChore(chore);
+  };
+  
+  const handleCompleteChore = (choreTitle) => {
+    const updatedDailyChores = userData.dailyChores.map(chore => {
+      if (chore.title === choreTitle) {
+        return { ...chore, completed: true };
+      }
+      return chore;
+    });
+
+    const allDailyChoresComplete = updatedDailyChores.every(c => c.completed);
+
+    if (allDailyChoresComplete) {
+      const screenTimeEarned = 15;
+      setScreenTimeReward(screenTimeEarned);
+      updateFirestore({
+        dailyChores: updatedDailyChores
+      });
+    } else {
+      updateFirestore({ dailyChores: updatedDailyChores });
+    }
+    setActiveChore(null);
+  };
+
+  const handleRewardChoice = (action) => {
+    if (!screenTimeReward) return;
+
+    let updates = {};
+    if (action === 'spend') {
+      updates = { screenTimeMins: userData.screenTimeMins + screenTimeReward };
+      setTickerMessage(`+${screenTimeReward} Minutes!`);
+    } else if (action === 'save') {
+      const creditsEarned = screenTimeReward / 5; // 1 credit = 5 mins
+      updates = { 
+        points: userData.points + creditsEarned,
+        totalPointsEarned: userData.totalPointsEarned + creditsEarned
+      };
+      setTickerMessage(`+${creditsEarned} Credits!`);
+    }
+
+    updateFirestore(updates);
+    setScreenTimeReward(null);
+    setShowTicker(true);
+    setTimeout(() => setShowTicker(false), 2000);
+  };
+  
+  const handleOptionalChoreComplete = (chore) => {
+    setTickerMessage(`+${chore.points} Credits!`);
+    setShowTicker(true);
+    setTimeout(() => setShowTicker(false), 2000);
+    updateFirestore({
+      points: userData.points + chore.points,
+      totalPointsEarned: userData.totalPointsEarned + chore.points,
+    });
+    setShowModal(null);
+  };
+  
+  const handleRedeemRequest = () => {
+      const redeemedAmount = parseFloat(redeemAmount);
+      if (isNaN(redeemedAmount) || redeemedAmount <= 0) {
+        setShowModal({ type: 'error', message: 'Please enter a valid number of credits.' });
+        return;
+      }
+
+      const today = new Date();
+      const isWeekend = today.getDay() === 6 || today.getDay() === 0;
+      const maxRedeem = isWeekend ? 12 : 3;
+
+      if (redeemedAmount > maxRedeem) {
+        setShowModal({ type: 'error', message: `Cannot redeem more than ${maxRedeem} points per day.` });
+        return;
+      }
+
+      if (redeemedAmount > userData.points) {
+        setShowModal({ type: 'error', message: 'Not enough Credits to redeem.' });
+        return;
+      }
+      
+      setShowModal({ type: 'parentApproval' });
+  };
+  
+  const handleParentApproval = () => {
+      if (parentCode === PARENT_APPROVAL_CODE) {
+          const redeemedAmount = parseFloat(redeemAmount);
+          const updates = {
+              points: userData.points - redeemedAmount,
+          };
+          if (redeemType === 'minutes') {
+              updates.screenTimeMins = userData.screenTimeMins + (redeemedAmount * 5);
+          } else {
+              updates.points = updates.points - redeemedAmount;
+          }
+          
+          updateFirestore(updates);
+          setShowModal({ type: 'success', message: `Transaction complete. ${redeemedAmount} credits redeemed!` });
+          setParentCode('');
+      } else {
+          setShowModal({ type: 'error', message: 'Invalid parental code. Please try again.' });
+      }
+  };
+
+  const launchpadChoresComplete = userData.launchpadChores.every(c => c.completed);
+  const allDailyChoresComplete = userData.dailyChores.length > 0 && userData.dailyChores.every(c => c.completed);
+  const dailyChoresLocked = userData.dailyChores.length === 0 || !launchpadChoresComplete;
+
+  const getDashboardStatus = () => {
+    const today = new Date();
+    
+    let lastResetDate = userData.lastResetDate;
+    if (lastResetDate && typeof lastResetDate.toDate === 'function') {
+      lastResetDate = lastResetDate.toDate();
+    } else if (!lastResetDate) {
+      lastResetDate = new Date(0);
+    }
+    
+    const isSameDay = today.toDateString() === lastResetDate.toDateString();
+    
+    const choresSet = userData.dailyChores && userData.dailyChores.length === 3;
+    
+    if (!choresSet) {
+        return "Initialize mission parameters, Abe.";
+    }
+
+    if (!isSameDay) {
+      return "Daily reset initiated, Abe.";
+    }
+
+    const dailyChoresDone = userData.dailyChores.filter(c => c.completed).length;
+    const totalDailyChores = userData.dailyChores.length;
+
+    if (allDailyChoresComplete) {
+      return "All daily protocols complete, Abe.";
+    }
+    if (!launchpadChoresComplete) {
+      return "Launchpad protocols incomplete, Abe.";
+    }
+    return `${dailyChoresDone} protocols complete, ${totalDailyChores - dailyChoresDone} protocols remain, Abe.`;
+  };
+  
+  const JEDI_RANKS = useMemo(() => [
+    { name: "Youngling", threshold: 0 },
+    { name: "Padawan", threshold: 50 },
+    { name: "Jedi Knight", threshold: 150 },
+    { name: "Council Member", threshold: 225 },
+    { name: "Jedi Master", threshold: 300 },
+    { name: "Grand Master", threshold: 500 },
+  ], []);
+
+  const getJediRank = (points) => {
+    let currentRank = JEDI_RANKS[0];
+    let nextRank = null;
+    for (let i = 0; i < JEDI_RANKS.length; i++) {
+      if (points >= JEDI_RANKS[i].threshold) {
+        currentRank = JEDI_RANKS[i];
+      }
+      if (i + 1 < JEDI_RANKS.length && points < JEDI_RANKS[i + 1].threshold) {
+        nextRank = JEDI_RANKS[i + 1];
+        break;
+      }
+    }
+    return { currentRank, nextRank };
+  };
+
+  const { currentRank, nextRank } = getJediRank(userData.totalPointsEarned);
+
+  return (
+    <div className="min-h-screen bg-black text-slate-100 p-4 relative overflow-y-auto">
+      {/* Font Import */}
+      <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;700&display=swap" rel="stylesheet" />
+      <style>
+        {`
+          body {
+            background-color: #000;
+          }
+          .font-orbitron {
+            font-family: 'Orbitron', sans-serif;
+          }
+          .glow-border {
+            border: 2px solid;
+            border-image-slice: 1;
+            border-image-source: linear-gradient(135deg, rgba(0,255,255,0.7), rgba(0,128,255,0.7), rgba(0,255,255,0.7));
+            box-shadow: 0 0 15px rgba(0,255,255,0.5), inset 0 0 5px rgba(0,255,255,0.3);
+          }
+          .glow-text {
+            text-shadow: 0 0 8px rgba(0,255,255,0.7);
+          }
+          .glow-button {
+            box-shadow: 0 0 10px rgba(0,255,255,0.5);
+            transition: all 0.3s ease;
+          }
+          .glow-button:hover {
+            box-shadow: 0 0 20px rgba(0,255,255,0.8);
+          }
+          .section-bg {
+            background-color: rgba(10, 25, 45, 0.7);
+            backdrop-filter: blur(5px);
+          }
+        `}
+      </style>
+
+      {/* Manual Login Modal */}
+      {!userId && showLoginModal && (
+          <div className="fixed inset-0 bg-slate-950 bg-opacity-75 flex items-center justify-center z-50">
+              <div className="bg-slate-900 border-2 border-cyan-500 rounded-2xl p-6 w-11/12 max-w-md text-center shadow-[0_0_15px_cyan]">
+                  <h2 className="text-2xl font-bold mb-4 text-cyan-400 font-orbitron uppercase">Access Profile</h2>
+                  <p className="text-sm text-slate-400 mb-4 font-mono">Enter your Unit ID to access your profile and progress.</p>
+                  <input
+                      type="text"
+                      value={manualId}
+                      onChange={(e) => setManualId(e.target.value)}
+                      placeholder="Enter Unit ID"
+                      className="w-full p-3 rounded-2xl bg-slate-800 text-white placeholder-slate-400 text-center font-mono"
+                  />
+                  <button
+                      onClick={handleManualLogin}
+                      className="mt-4 w-full p-3 rounded-2xl font-bold transition-all duration-200 glow-button bg-cyan-600 hover:bg-cyan-500"
+                  >
+                      Connect
+                  </button>
+                  <button
+                      onClick={() => setShowLoginModal(false)}
+                      className="mt-2 w-full p-2 rounded-2xl bg-slate-700 hover:bg-slate-600 font-bold"
+                  >
+                      Cancel
+                  </button>
+              </div>
+          </div>
+      )}
+      
+      {/* User ID Display and Login Button */}
+      <div className="absolute top-2 right-2 text-xs opacity-50 select-text font-mono flex items-center gap-2">
+        <span className="break-words">Unit ID: <span className="text-cyan-400">{userId || 'N/A'}</span></span>
+        <button onClick={() => setShowLoginModal(true)} className="text-green-500 hover:text-green-400 transition-colors">
+          <LogIn className="w-4 h-4" />
+        </button>
+      </div>
+
+      {/* Points Ticker */}
+      {showTicker && (
+        <div className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-50 transition-transform duration-500 ease-in-out">
+          <div className="bg-cyan-500 text-slate-900 p-4 rounded-full shadow-lg text-4xl font-bold flex items-center animate-pulse">
+            {tickerMessage}
+          </div>
+        </div>
+      )}
+
+      {/* Modals */}
+      {showModal && (
+        <div className="fixed inset-0 bg-slate-950 bg-opacity-75 flex items-center justify-center z-50">
+          <div className="bg-slate-900 border-2 border-cyan-500 rounded-2xl p-6 w-11/12 max-w-md text-center shadow-[0_0_15px_cyan]">
+            <h2 className="text-2xl font-bold mb-4 text-cyan-400 font-orbitron uppercase">
+              {showModal.type === 'weekly' ? 'Protocol Archive' : showModal.type === 'redeem' ? 'Credit Transfer' : showModal.type === 'optional' ? 'Bonus Protocols' : showModal.type === 'parentApproval' ? 'Parental Authorization Required' : showModal.type === 'protocolSteps' ? 'Protocol Details' : 'System Alert!'}
+            </h2>
+            
+            {/* Weekly Chores Modal */}
+            {showModal.type === 'weekly' && (
+              <>
+                <p className="text-sm text-slate-400 mb-4 font-mono">Select 3 protocols for the week's missions.</p>
+                <div className="flex flex-col gap-2 max-h-60 overflow-y-auto">
+                  {DAILY_CHORES_POOL.map(chore => (
+                    <button
+                      key={chore.title}
+                      onClick={() => setSelectedWeeklyChores(prev => {
+                        if (prev.find(c => c.title === chore.title)) {
+                          return prev.filter(c => c.title !== chore.title);
+                        } else if (prev.length < 3) {
+                          return [...prev, chore];
+                        }
+                        return prev;
+                      })}
+                      onDoubleClick={() => setShowModal({ type: 'protocolSteps', chore })}
+                      className={`p-3 rounded-2xl text-left transition-colors duration-200 ease-in-out flex items-center justify-between font-mono uppercase
+                                 ${selectedWeeklyChores.find(c => c.title === chore.title) ? 'bg-cyan-700 border-2 border-cyan-500 shadow-[0_0_5px_cyan]' : 'bg-slate-800 hover:bg-slate-700'}`}
+                    >
+                      <span>{chore.title}</span>
+                      {selectedWeeklyChores.find(c => c.title === chore.title) && <CheckSquare className="text-cyan-400" />}
+                    </button>
+                  ))}
+                </div>
+                <button
+                  onClick={lockInWeeklyChores}
+                  disabled={selectedWeeklyChores.length !== 3}
+                  className={`mt-4 w-full p-3 rounded-2xl font-bold transition-all duration-200 glow-button
+                             ${selectedWeeklyChores.length === 3 ? 'bg-cyan-600 hover:bg-cyan-500' : 'bg-slate-500 cursor-not-allowed'}`}
+                >
+                  Initiate Protocols
+                </button>
+              </>
+            )}
+
+            {/* Protocol Steps Modal for Weekly Selection */}
+            {showModal.type === 'protocolSteps' && showModal.chore && (
+                <>
+                <h2 className="text-2xl font-bold mb-4 text-cyan-400 font-orbitron uppercase">{showModal.chore.title}</h2>
+                <div className="flex flex-col gap-3 text-left">
+                  <ol className="list-decimal list-inside text-slate-200 text-sm md:text-base font-mono">
+                    {showModal.chore.tasks.map((task, index) => (
+                      <li key={index} className="py-1">{task}</li>
+                    ))}
+                  </ol>
+                </div>
+                </>
+            )}
+
+            {/* Redeem Credits Modal */}
+            {showModal.type === 'redeem' && (
+              <>
+                <p className="text-sm text-slate-400 mb-4 font-mono">Redeem credits for screen time or cash. Weekday limit: 3, Weekend limit: 12.</p>
+                <div className="flex flex-col gap-4">
+                  <input
+                    type="number"
+                    value={redeemAmount}
+                    onChange={(e) => setRedeemAmount(e.target.value)}
+                    placeholder="Enter credits to redeem"
+                    className="w-full p-3 rounded-2xl bg-slate-800 text-white placeholder-slate-400 text-center font-mono"
+                  />
+                  <div className="flex justify-around">
+                    <button
+                      onClick={() => setRedeemType('minutes')}
+                      className={`p-3 rounded-2xl font-bold transition-colors duration-200 glow-button ${redeemType === 'minutes' ? 'bg-cyan-500 text-slate-900' : 'bg-slate-700 hover:bg-slate-600'}`}
+                    >
+                      Screen Time
+                    </button>
+                    <button
+                      onClick={() => setRedeemType('cash')}
+                      className={`p-3 rounded-2xl font-bold transition-colors duration-200 glow-button ${redeemType === 'cash' ? 'bg-cyan-500 text-slate-900' : 'bg-slate-700 hover:bg-slate-600'}`}
+                    >
+                      Cash
+                    </button>
+                  </div>
+                  {redeemType === 'cash' && redeemAmount > 0 && (
+                      <p className="text-center font-mono text-xl mt-2 text-cyan-400">
+                          {redeemAmount} credit{redeemAmount > 1 ? 's' : ''} = ${parseFloat(redeemAmount * 1).toFixed(2)}
+                      </p>
+                  )}
+                  {redeemType === 'minutes' && redeemAmount > 0 && (
+                      <p className="text-center font-mono text-xl mt-2 text-cyan-400">
+                          {redeemAmount} credit{redeemAmount > 1 ? 's' : ''} = {redeemAmount * 5} minute{redeemAmount * 5 > 1 ? 's' : ''}
+                      </p>
+                  )}
+                  <button onClick={handleRedeemRequest} className="p-3 w-full rounded-2xl bg-red-600 hover:bg-red-500 font-bold text-slate-100 shadow-[0_0_10px_red]">
+                    Execute Transfer
+                  </button>
+                </div>
+              </>
+            )}
+
+            {/* Parent Approval Modal */}
+            {showModal.type === 'parentApproval' && (
+                <>
+                  <p className="text-sm text-slate-400 mb-4 font-mono">Enter parental access code to proceed with the transaction.</p>
+                  <input
+                    type="password"
+                    value={parentCode}
+                    onChange={(e) => setParentCode(e.target.value)}
+                    placeholder="Enter Code"
+                    className="w-full p-3 rounded-2xl bg-slate-800 text-white placeholder-slate-400 text-center font-mono"
+                  />
+                  <button
+                    onClick={handleParentApproval}
+                    className="mt-4 w-full p-3 rounded-2xl font-bold transition-all duration-200 glow-button bg-cyan-600 hover:bg-cyan-500"
+                  >
+                    Authorize
+                  </button>
+                </>
+            )}
+
+            {/* Optional Chores Modal */}
+            {showModal.type === 'optional' && (
+                <>
+                  <p className="text-sm text-slate-400 mb-4 font-mono">Select a bonus protocol to earn more credits!</p>
+                  <div className="flex flex-col gap-2 max-h-60 overflow-y-auto">
+                    {OPTIONAL_CHORES_POOL.map(chore => (
+                      <button
+                        key={chore.title}
+                        onClick={() => setActiveChore(chore)}
+                        className="p-3 rounded-2xl text-left bg-slate-800 hover:bg-slate-700 transition-colors duration-200 flex items-center justify-between font-mono uppercase"
+                      >
+                        <span>{chore.title}</span>
+                        <span className="flex items-center text-cyan-400 ml-2">
+                          <Star className="w-4 h-4 mr-1" />
+                          {chore.points}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </>
+            )}
+
+            {/* Error/Success Modal */}
+            {(showModal.type === 'error' || showModal.type === 'success') && (
+                <>
+                    <p className={`text-lg mb-4 font-bold ${showModal.type === 'error' ? 'text-red-500' : 'text-green-500'}`}>{showModal.message}</p>
+                </>
+            )}
+
+            {/* Close button for all modals */}
+            <button
+                onClick={() => setShowModal(null)}
+                className="mt-4 p-2 w-full rounded-2xl bg-slate-700 hover:bg-slate-600 font-bold"
+            >
+                Dismiss
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Chore Checklist Modal */}
+      {activeChore && (
+        <div className="fixed inset-0 bg-slate-950 bg-opacity-75 flex items-center justify-center z-50">
+          <div className="bg-slate-900 border-2 border-cyan-500 rounded-2xl p-6 w-11/12 max-w-md text-center shadow-[0_0_15px_cyan]">
+            <h2 className="text-2xl font-bold mb-4 text-cyan-400 font-orbitron uppercase">{activeChore.title}</h2>
+            <div className="flex flex-col gap-3 text-left">
+              <ol className="list-decimal list-inside text-slate-200 text-sm md:text-base font-mono">
+                {activeChore.tasks.map((task, index) => (
+                  <li key={index} className="py-1">
+                    {typeof task === 'object' ? task.text : task}
+                  </li>
+                ))}
+              </ol>
+            </div>
+            <button
+              onClick={() => {
+                if (activeChore.type === 'daily') {
+                  handleCompleteChore(activeChore.title);
+                } else {
+                  handleOptionalChoreComplete(activeChore);
+                }
+              }}
+              className="mt-6 p-2 w-full rounded-2xl bg-green-600 hover:bg-green-500 font-bold"
+            >
+              Complete Protocol
+            </button>
+            <button
+              onClick={() => setActiveChore(null)}
+              className="mt-2 p-2 w-full rounded-2xl bg-slate-700 hover:bg-slate-600 font-bold"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Screen Time Reward Modal */}
+      {screenTimeReward !== null && (
+        <div className="fixed inset-0 bg-slate-950 bg-opacity-75 flex items-center justify-center z-50">
+          <div className="bg-slate-900 border-2 border-cyan-500 rounded-2xl p-6 w-11/12 max-w-md text-center shadow-[0_0_15px_cyan]">
+            <h2 className="text-2xl font-bold mb-4 text-cyan-400 font-orbitron uppercase">Protocol Complete</h2>
+            <p className="text-sm text-slate-400 mb-4 font-mono">You've earned {screenTimeReward} minutes of screen time. How do you want to use it?</p>
+            <div className="flex flex-col gap-4">
+              <button
+                onClick={() => handleRewardChoice('spend')}
+                className="p-3 w-full rounded-2xl bg-cyan-600 hover:bg-cyan-500 font-bold text-slate-900 glow-button"
+              >
+                Spend Now (+{screenTimeReward} Minutes)
+              </button>
+              <button
+                onClick={() => handleRewardChoice('save')}
+                className="p-3 w-full rounded-2xl bg-yellow-600 hover:bg-yellow-500 font-bold text-slate-900 glow-button"
+              >
+                Save as Credits (+{screenTimeReward / 5} Credits)
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Main Container */}
+      <div className="container mx-auto max-w-3xl font-orbitron">
+        
+        {/* Dashboard */}
+        <div className="section-bg rounded-2xl p-6 mb-6 glow-border">
+          <div className="flex flex-col md:flex-row items-center justify-between gap-4">
+            <div className="text-center md:text-left flex-1">
+              <h1 className="text-3xl font-bold text-cyan-400 uppercase glow-text">Abe's Star Chores Command Center</h1>
+              <p className="text-lg text-slate-300 mt-2 font-mono uppercase">{getDashboardStatus()}</p>
+            </div>
+            <div className="flex items-center justify-center gap-6 mt-4 md:mt-0 font-mono">
+               {/* Login Status */}
+               <div className="flex flex-col items-center gap-2">
+                 <LogIn className="h-8 w-8 text-green-500 animate-pulse glow-text" />
+                 <span className="text-sm text-green-400">LOGGED IN</span>
+               </div>
+               {/* Jedi Rank Display */}
+              <div className="flex flex-col items-center gap-2">
+                <Star className="h-8 w-8 text-yellow-400 animate-pulse glow-text" />
+                <span className="text-xl font-bold">{currentRank.name.toUpperCase()}</span>
+                {nextRank && (
+                  <p className="text-sm text-slate-400">{nextRank.threshold - userData.totalPointsEarned} to {nextRank.name}</p>
+                )}
+                {!nextRank && (
+                  <p className="text-sm text-slate-400">Jedi Grand Master</p>
+                )}
+              </div>
+              <div className="flex flex-col items-center gap-2">
+                <Star className="h-8 w-8 text-cyan-500 animate-pulse glow-text" />
+                <span className="text-xl font-bold">{userData.points}</span>
+                <span className="text-sm text-slate-400">CREDITS</span>
+              </div>
+              <button
+                onClick={() => setShowModal({ type: 'redeem' })}
+                className="bg-red-600 hover:bg-red-500 text-slate-100 font-bold py-2 px-4 rounded-full transition-colors duration-200 shadow-[0_0_10px_red] flex items-center glow-button"
+              >
+                <HandCoins className="w-5 h-5 mr-2" />
+                REDEEM
+              </button>
+            </div>
+          </div>
+        </div>
+        
+        {/* Main Chore Cards */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 font-orbitron">
+          
+          {/* Weekly Prep Card */}
+          <div className="section-bg rounded-2xl p-6 glow-border">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-xl font-bold text-cyan-400 uppercase glow-text">Weekly Setup</h2>
+              <List className="text-cyan-400 glow-text" />
+            </div>
+            {isSunday ? (
+              <button
+                onClick={() => setShowModal({ type: 'weekly' })}
+                className="w-full bg-cyan-600 hover:bg-cyan-500 text-slate-100 font-bold py-3 rounded-2xl transition-colors duration-200 glow-button"
+              >
+                Plan Your Protocols
+              </button>
+            ) : (
+              <div>
+                <p className="text-slate-300 font-mono uppercase">Daily protocols are locked in:</p>
+                <ul className="list-disc list-inside mt-2 text-slate-400 font-mono">
+                  {userData.weeklyChores.map((chore, index) => <li key={index}>{chore}</li>)}
+                </ul>
+              </div>
+            )}
+          </div>
+          
+          {/* Launchpad Chores Card */}
+          <div className="section-bg rounded-2xl p-6 border-2 border-orange-500 shadow-[0_0_10px_rgba(255,165,0,0.3)]">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-xl font-bold text-orange-400 uppercase glow-text">Launchpad Protocols</h2>
+              <Zap className="text-orange-400 glow-text" />
+            </div>
+            <p className="text-sm text-yellow-300 mb-4 font-mono uppercase">Complete both to unlock 15 minutes of screen time.</p>
+            <ul className="space-y-3">
+              {userData.launchpadChores.map(chore => (
+                <li key={chore.id} className="flex items-center justify-between font-mono uppercase">
+                  <span className={`flex-1 text-lg ${chore.completed ? 'line-through text-slate-500' : 'text-slate-200'}`}>{chore.title}</span>
+                  <button
+                    onClick={() => handleLaunchpadChoreClick(chore.id)}
+                    className={`rounded-full p-2 transition-colors duration-200 ${chore.completed ? 'bg-green-600 shadow-[0_0_5px_green]' : 'bg-slate-700 hover:bg-slate-600'}`}
+                  >
+                    <CheckSquare className="w-6 h-6" />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+          
+          {/* Daily Chores Card */}
+          <div className={`section-bg rounded-2xl p-6 glow-border ${!launchpadChoresComplete ? 'border-slate-500' : 'border-cyan-500'}`}>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className={`text-xl font-bold uppercase glow-text ${!launchpadChoresComplete ? 'text-slate-400' : 'text-cyan-400'}`}>Daily Protocols</h2>
+              <Star className={`${!launchpadChoresComplete ? 'text-slate-400' : 'text-cyan-400'}`} />
+            </div>
+            {userData.dailyChores.length === 0 ? (
+              <p className="text-slate-400 font-mono uppercase">Please lock in your weekly protocols on the main dashboard.</p>
+            ) : (
+                <>
+                <p className="text-sm text-yellow-300 mb-4 font-mono uppercase">Complete all 3 to unlock another 15 minutes.</p>
+                <ul className="space-y-3">
+                    {userData.dailyChores.map(chore => (
+                    <li key={chore.title} className="flex items-center justify-between font-mono uppercase">
+                        <span className={`flex-1 text-lg cursor-pointer ${!launchpadChoresComplete || chore.completed ? 'line-through text-slate-500' : 'text-slate-200'}`} 
+                            onClick={() => handleDailyChoreClick(chore)}>
+                        {chore.title}
+                        </span>
+                        <button
+                        onClick={() => handleDailyChoreClick(chore)}
+                        className={`rounded-full p-2 transition-colors duration-200 ${!launchpadChoresComplete || chore.completed ? 'bg-slate-700 cursor-not-allowed text-slate-500' : 'bg-green-600 hover:bg-green-500 shadow-[0_0_5px_green]'}`}
+                        >
+                        <CheckSquare className="w-6 h-6" />
+                        </button>
+                    </li>
+                    ))}
+                </ul>
+                </>
+            )}
+          </div>
+          
+          {/* Optional Chores Card */}
+          <div className="section-bg rounded-2xl p-6 border-2 border-yellow-500 shadow-[0_0_10px_rgba(255,255,0,0.3)]">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-xl font-bold text-yellow-400 uppercase glow-text">Optional Directives</h2>
+              <HandCoins className="text-yellow-400" />
+            </div>
+            <p className="text-slate-300 mb-4 font-mono uppercase">Engage in additional directives to earn more credits.</p>
+            <button
+              onClick={() => setShowModal({ type: 'optional' })}
+              disabled={!allDailyChoresComplete}
+              className={`w-full font-bold py-3 rounded-2xl transition-colors duration-200 glow-button uppercase ${!allDailyChoresComplete ? 'bg-slate-500 cursor-not-allowed text-slate-400' : 'bg-cyan-600 hover:bg-cyan-500 text-slate-900'}`}
+            >
+              Earn Credits
+            </button>
+            {!allDailyChoresComplete && (
+                <p className="text-sm text-red-500 mt-2 font-mono">Complete all daily protocols to unlock.</p>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default App;
